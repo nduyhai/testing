@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	uuid "github.com/satori/go.uuid"
-	"github.com/stretchr/testify/assert"
 	"github.com/xuanit/testing/todo/consumer"
 	"log"
 	"net"
@@ -26,6 +25,7 @@ import (
 
 var grpcAddress = "localhost:5003"
 var httpAddress = "localhost:5004"
+var pactPath = "/opt/pact/bin"
 
 type toDoImplStub struct {
 }
@@ -94,6 +94,7 @@ func TestToDoService(t *testing.T) {
 			// Setup any state required by the test
 			// in this case, we ensure there is a "user" in the system
 			"There are todo A and todo B": func() error {
+				log.Println("'There are todo A and todo B' state handler invoked")
 				toDos = []*pb.Todo{{Id: "id1", Title: "ToDo A"}, {Id: "id2", Title: "ToDo B"}}
 				return nil
 			},
@@ -103,24 +104,39 @@ func TestToDoService(t *testing.T) {
 }
 
 func TestCreateToDo(t *testing.T) {
-	pactDir, pact := getPact()
+	pact := getPact()
 
 	defer pact.Teardown()
 
-	_, _ = pact.VerifyProvider(t, types.VerifyRequest{
-		ProviderBaseURL: "http://" + httpAddress,
-		PactURLs:        []string{filepath.ToSlash(fmt.Sprintf("%s/todoconsumer-todoservice.json", pactDir))},
-	})
-
+	todoReq := consumer.ToDo{Id: uuid.NewV4().String(), Title: "1-1 with manager", Description: "discuss about OKRs", Completed: true}
+	// Pass in test case
 	var test = func() (err error) {
 		proxy := consumer.ToDoProxy{Host: "localhost", Port: pact.Server.Port}
-		id, err := proxy.CreateToDo(consumer.ToDo{Id: uuid.NewV4().String(), Title: "Another todo", Description: "Another description", Completed: true})
+		_, err = proxy.CreateToDo(todoReq)
 		if err != nil {
 			return err
 		}
-		assert.Equal(t, "id1", id)
 		return nil
 	}
+
+	// Set up our expected interactions.
+	pact.AddInteraction().
+		UponReceiving("A request to create todo").
+		WithRequest(dsl.Request{
+			Method:  "POST",
+			Path:    dsl.String("/v1/todo"),
+			Headers: dsl.MapMatcher{"Content-Type": dsl.String("application/json")},
+			Body: map[string]interface{}{
+				"completed":   todoReq.Completed,
+				"description": todoReq.Description,
+				"title":       todoReq.Title,
+			},
+		}).
+		WillRespondWith(dsl.Response{
+			Status:  200,
+			Headers: dsl.MapMatcher{"Content-Type": dsl.String("application/json")},
+			Body:    dsl.Like(&consumer.ToDo{Id: todoReq.Id}),
+		})
 
 	if err := pact.Verify(test); err != nil {
 		log.Fatalf("Error on Verify: %v", err)
@@ -128,14 +144,52 @@ func TestCreateToDo(t *testing.T) {
 
 }
 
-func getPact() (string, *dsl.Pact) {
-	var dir, _ = os.Getwd()
-	var pactDir = fmt.Sprintf("%s/../consumer/pacts", dir)
+func TestListToDo(t *testing.T) {
+	pact := getPact()
+
+	defer pact.Teardown()
+
+	// Set up our expected interactions.
+	pact.AddInteraction().
+		Given("There are todo A and todo B").
+		UponReceiving("A request to create todo").
+		Given("User foo exists").
+		WithRequest(dsl.Request{
+			Method:  "GET",
+			Path:    dsl.Like("/v1/todo?limit=10&not_completed=true"),
+			Headers: dsl.MapMatcher{"Content-Type": dsl.String("application/json")},
+		}).
+		WillRespondWith(dsl.Response{
+			Status:  200,
+			Headers: dsl.MapMatcher{"Content-Type": dsl.String("application/json")},
+			Body:    dsl.Like(&consumer.ToDoList{}),
+		})
+	// Pass in test case
+	var test = func() (err error) {
+		proxy := consumer.ToDoProxy{Host: "localhost", Port: pact.Server.Port}
+		doList, err := proxy.ListToDo(10, true)
+
+		if err != nil {
+			return err
+		}
+		log.Println("Result:", doList)
+		return nil
+	}
+
+	if err := pact.Verify(test); err != nil {
+		log.Fatalf("Error on Verify: %v", err)
+	}
+}
+func getPact() *dsl.Pact {
+	env := os.Getenv("PATH")
+	_ = os.Setenv("PATH", env+":"+pactPath)
 	go startServer()
 	pact := &dsl.Pact{
 		Consumer: "ToDoConsumer",
 		Provider: "ToDoService",
+		Host:     "localhost",
+		LogLevel: "DEBUG",
 	}
 	pact.DisableToolValidityCheck = true
-	return pactDir, pact
+	return pact
 }

@@ -43,20 +43,21 @@ func (p *ToDoProxy) CreateToDo(todo ToDo) (string, error) {
 	createToDoRes := struct {
 		ID string `json:"id"`
 	}{}
-	json.NewDecoder(res.Body).Decode(&createToDoRes)
+	_ = json.NewDecoder(res.Body).Decode(&createToDoRes)
 
-	res.Body.Close()
+	_ = res.Body.Close()
 	return createToDoRes.ID, nil
 }
 
 func (p *ToDoProxy) ListToDo(limit int32, notCompleted bool) (*ToDoList, error) {
 	url := fmt.Sprintf("%s/todo?limit=%d&not_completed=%t", p.getApi(), limit, notCompleted)
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Content-Type", "application/json")
 
 	res, _ := http.DefaultClient.Do(req)
 	toDos := ToDoList{}
-	json.NewDecoder(res.Body).Decode(toDos)
+	_ = json.NewDecoder(res.Body).Decode(toDos)
 
-	res.Body.Close()
+	_ = res.Body.Close()
 	return &toDos, nil
 }
